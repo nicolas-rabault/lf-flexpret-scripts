@@ -2,24 +2,53 @@ target C {
     timeout: 15 sec
 };
 
-reactor Sensors {    
+// This is what we call a driver container. But I think at Luos we will have 2 drivers, one for the button and one for bumper.
+// But perhaps its more lik nodes.
+reactor Sensors {
+    // Those are like pipe beetween reactors?
     output button_out:bool;
     output bumper_out:bool;
     
+    // State are like shared variables?
+
+    // In Luos basic functionalities are represented by models (we call it template sometimes).
+    // For example "State" model is for buttons, and all the values representing the button can be output, input or both. They are associated to already maid "pipe" depending on the format of data (bool, distance, temperature, ...)
+    // To say it differently the "State" type we have already have the "output button_out:bool;" on it. And its a configurable option in this particular type.
+    // This kind of model is related to a container managing all the "pipes" of the model and sharing it with other containers.
+    // From another container, to get the value of a Button container I have to ask him a bool (we can also ask for all output data).
+    // Here is a Luos button example using models (template) : https://github.com/Luos-io/Examples/tree/template/Drivers/Button
+
+    // Users can create their hown models or don't use them and manage messages ("pipes") directly on the container code.
+    // Regarding your code we are describing variables and pipes like we make it when we don't use pre-made models (templates).
+    // To create a container like this Luos need some informations : 
+    // - Callback => A callback called when the container receive something. In this function we have the things you make in "reactions".
+    // - Type     => A kind of model ID. Some are already defined (motor, distance, ...), and users can create their own. I think it is like your "bool" for button.
+    // - Alias    => To easily find a container we name it using a default Alias. You can change the Alias on runtime and it is saved on the board. In your case it's like the variable name ("button" here).
+    // - Revision => This is the revision of this container. I don't think you have any equivalent information here, but it's no big deal to generate one...
+    // Here is a Luos button example without using models : https://github.com/Luos-io/Examples/tree/master/Projects/l0/Button/lib/Button
+
     state button:bool(false);
     state time_to_next_bump:int(25);
     
     // Simulated by the return key
+
+    // Is it something to replace External interupt?
     logical action button_press:char;
     
     // We pull from sensors every 100 msec, for now.
+    // This kind of event can be done in Luos but it represent a real messaging exchange between containers, so it missing a target here to be compliant with it.
+    // At Luos Drivers have to be stupid. They can't take any decision regarding the machine behavior. They just wait for someone asking them something. They can't take any decision to send something to someone.
+    // To pull a sensor periodicaly in Luos we need to have an application containers (the controller reactor in your case) asking for the periodical update.
+    // If we want to do something periodically into the driver we can do it in the container_loop() function.
     timer sensor_pull(0, 100 msec);
     
+    // This is like our container_init() function :)
     reaction(startup) -> button_press {=
         schedule(button_press, 0);       
     =}
     
     // Toggle button state
+    // Here you copy the value of the button using an event (external interrupt) in the example I gave you previously we periodically copy the value of the button on the equvalent of your "button_out", like you are doing with "bumper_out".
     reaction(button_press) -> button_out {=
         self->button = !self->button;
         printf("Button status: %d\n", self->button);
@@ -44,7 +73,13 @@ reactor Sensors {
 /**
  * The controller for the state machine
  */
+// This is what we call app containers. App containers can't have any direct access to hardware but can work in any machine or board. They use drivers to do things.
 reactor Controller {
+    // This is interesting because here you are describing instance of external shared value needed by the Controller App. Or the input need of the App.
+    // As I mentioned previously Drivers can't send informations by themself, app have to ask them to do it.
+    // Also Apps have to find the good container on the system to fill its need (by Alias, type, ID, or physical position for example).
+    // This research allow an app to be independant and easy to reuse in any program without needing any global project configuration such as line 214
+    // For example here we could find the button or the motors of any machine to have the same result.
     input bumped:bool;
     input pressed:bool;
     output move:int[];
@@ -57,6 +92,8 @@ reactor Controller {
     state backing_distance:int(0);
     state turning_distance:int(0);
     
+    // Here you are describing the entire behavior you will have to put into the App container callback. Luos will call this callback in case of "pressed" or "bumped" information input and let you know wich one you are dealing with.
+    // As I understand it the -> represent a reaction message to another container or the target in Luos vocabulary
     reaction(pressed) {=
         if (pressed->is_present && pressed->value == true) {
             self->_state = 1;
@@ -140,11 +177,16 @@ reactor Controller {
     
     reaction(bumped) {=
         // Logging sensor inputs...
+    // We can't do deadline :(
     =} deadline(10 msec) {=
         printf("Soft deadline missed. Waiting for the next input.\n");
     =}
 }
 
+// Here is the equivalent container in Luos for this reactor : https://github.com/Luos-io/Examples/tree/master/Projects/l0/Dc_motor/lib/DC_motor
+// The same one using models : https://github.com/Luos-io/Examples/tree/template/Drivers/DC_motor
+// As you can see here there is 2 containers representing left and right motors on the same folder. This is because there is one physical driver but 2 features called "DC_motor1_mod" and "DC_motor2_mod".
+// We also have some example generating containers depending on the number of pluged motors we have for example.
 reactor Motors {
     input _in:int[];
     state stopped:bool(false);
@@ -152,6 +194,7 @@ reactor Motors {
         if (!self->stopped) {
         	printf("left motor: %d, right motor: %d\n", _in->value[0], _in->value[1]);   
         }
+    // We can't do that in Luos for now. This is THE missing feature.
     =} deadline(20 msec) {=
         self->stopped = true;
         printf("Hard deadline missed. Emergency stop.\n");
@@ -167,6 +210,10 @@ main reactor Robot {
     motors 		= new Motors();
     controller 	= new Controller();
     
+    // Those lines reprensent link between containers. For now we only have manual or periodical update. We plan to create some event update, but we don't have it yet.
+    // Those line also represent the Luos ressource research.
+    // But because we have everything describing the entire behavior in LF, we don't really need to search for a ressource like we are doing in Luos.
+    // In Luos all boards (nodes) is a project so we need to developpement using a decentralize way of thinking by searching for features. Using LF we could avoid it because a project is an entire behavior.
     sensors.button_out 	-> controller.pressed;
     sensors.bumper_out 	-> controller.bumped;
     controller.move		-> motors._in;
